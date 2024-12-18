@@ -124,6 +124,7 @@ func newRemoteProtocolSelector(
 	fetchFunc edgediscovery.PercentageFetcher,
 	ttl time.Duration,
 	log *zerolog.Logger,
+	needEdgeTunnel bool,
 ) *remoteProtocolSelector {
 	return &remoteProtocolSelector{
 		current:         current,
@@ -210,6 +211,7 @@ func NewProtocolSelector(
 	protocolFetcher edgediscovery.PercentageFetcher,
 	resolveTTL time.Duration,
 	log *zerolog.Logger,
+	needEdgeTunnel bool,
 ) (ProtocolSelector, error) {
 	// With --post-quantum, we force quic
 	if needPQ {
@@ -239,11 +241,14 @@ func NewProtocolSelector(
 	case HTTP2.String():
 		return &staticProtocolSelector{current: HTTP2}, nil
 	case AutoSelectFlag:
+	    if needEdgeTunnel {
+	        return newDefaultProtocolSelector(HTTP2), nil
+	    }
 		// When a --token is provided, we want to start with QUIC but have fallback to HTTP2
 		if tunnelTokenProvided {
 			return newDefaultProtocolSelector(QUIC), nil
 		}
-		return newRemoteProtocolSelector(fetchedProtocol, ProtocolList, threshold, protocolFetcher, resolveTTL, log), nil
+		return newRemoteProtocolSelector(fetchedProtocol, ProtocolList, threshold, protocolFetcher, resolveTTL, log, needEdgeTunnel), nil
 	}
 
 	return nil, fmt.Errorf("Unknown protocol %s, %s", protocolFlag, AvailableProtocolFlagMessage)

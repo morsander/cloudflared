@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -39,6 +40,7 @@ const (
 	CredFileFlag            = "credentials-file"
 	CredContentsFlag        = "credentials-contents"
 	TunnelTokenFlag         = "token"
+	EdgeTunnelFlag          = "edge-tunnel"
 	overwriteDNSFlagName    = "overwrite-dns"
 	noDiagLogsFlagName      = "no-diag-logs"
 	noDiagMetricsFlagName   = "no-diag-metrics"
@@ -143,6 +145,12 @@ var (
 		EnvVars: []string{"TUNNEL_TRANSPORT_PROTOCOL"},
 		Hidden:  true,
 	})
+	tunnelProxyFlag = altsrc.NewStringFlag(&cli.StringFlag{
+        Name:    EdgeTunnelFlag,
+        Usage:   "Specify a tunnel to use when discovering the edge.",
+        EnvVars: []string{"EDGE_TUNNEL"},
+        Hidden:  false,
+    })
 	postQuantumFlag = altsrc.NewBoolFlag(&cli.BoolFlag{
 		Name:    "post-quantum",
 		Usage:   "When given creates an experimental post-quantum secure tunnel",
@@ -697,6 +705,7 @@ func buildRunCommand() *cli.Command {
 		selectProtocolFlag,
 		featuresFlag,
 		tunnelTokenFlag,
+		tunnelProxyFlag,
 		icmpv4SrcFlag,
 		icmpv6SrcFlag,
 	}
@@ -725,7 +734,7 @@ func runCommand(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-
+    edgeTunnel := c.String(EdgeTunnelFlag)
 	if c.NArg() > 1 {
 		return cliutil.UsageError(`"cloudflared tunnel run" accepts only one argument, the ID or name of the tunnel to run.`)
 	}
@@ -739,7 +748,7 @@ func runCommand(c *cli.Context) error {
 	// Check if token is provided and if not use default tunnelID flag method
 	if tokenStr := c.String(TunnelTokenFlag); tokenStr != "" {
 		if token, err := ParseToken(tokenStr); err == nil {
-			return sc.runWithCredentials(token.Credentials())
+			return sc.runWithCredentials(token.Credentials(), edgeTunnel)
 		}
 
 		return cliutil.UsageError("Provided Tunnel token is not valid.")
@@ -753,7 +762,7 @@ func runCommand(c *cli.Context) error {
 			}
 		}
 
-		return runNamedTunnel(sc, tunnelRef)
+		return runNamedTunnel(sc, tunnelRef, edgeTunnel)
 	}
 }
 
@@ -770,12 +779,24 @@ func ParseToken(tokenStr string) (*connection.TunnelToken, error) {
 	return &token, nil
 }
 
-func runNamedTunnel(sc *subcommandContext, tunnelRef string) error {
+func ParseEdgeTunnel(edgeTunnel string) error {
+    ipPort := strings.Split(edgeTunnel, ":")
+    if len(ipPort) != 2 {
+        return fmt.Errorf("edgeTunnel value should be in the format <ip>:<port>")
+    }
+    _, err := strconv.Atoi(ipPort[1])
+    if err != nil {
+        return err
+    }
+	return nil
+}
+
+func runNamedTunnel(sc *subcommandContext, tunnelRef string, edgeTunnel string) error {
 	tunnelID, err := sc.findID(tunnelRef)
 	if err != nil {
 		return errors.Wrap(err, "error parsing tunnel ID")
 	}
-	return sc.run(tunnelID)
+	return sc.run(tunnelID, edgeTunnel)
 }
 
 func buildCleanupCommand() *cli.Command {

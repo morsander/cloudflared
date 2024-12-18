@@ -51,6 +51,12 @@ func runApp(app *cli.App, graceShutdownC chan struct{}) {
 				Name:   "install",
 				Usage:  "Install cloudflared as a Windows service",
 				Action: cliutil.ConfiguredAction(installWindowsService),
+				Flags: []cli.Flag{
+                    &cli.StringFlag{
+                        Name:  "edge-tunnel",
+                        Usage: "Specify the edge tunnel hostname and port",
+                    },
+                },
 			},
 			{
 				Name:   "uninstall",
@@ -198,6 +204,11 @@ func installWindowsService(c *cli.Context) error {
 		log.Err(err).Msg(errMsg)
 		return errors.Wrap(err, errMsg)
 	}
+
+	edgeTunnel := c.String("edge-tunnel")
+    if edgeTunnel != "" {
+        extraArgs = append(extraArgs, "--edge-tunnel", edgeTunnel)
+    }
 
 	config := mgr.Config{StartType: mgr.StartAutomatic, DisplayName: windowsServiceDescription}
 	s, err = m.CreateService(windowsServiceName, exepath, config, extraArgs...)

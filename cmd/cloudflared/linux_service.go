@@ -192,6 +192,14 @@ var (
 	}
 )
 
+var (
+    edgeTunnelServiceFlag = &cli.StringFlag{
+        Name:  "edge-tunnel",
+        Usage: "Optional edge tunnel address in the format <ip>:<port>",
+        Value: "",
+    }
+)
+
 func isSystemd() bool {
 	if _, err := os.Stat("/run/systemd/system"); err == nil {
 		return true
@@ -216,8 +224,12 @@ func installLinuxService(c *cli.Context) error {
 	var extraArgsFunc func(c *cli.Context, log *zerolog.Logger) ([]string, error)
 	if c.NArg() == 0 {
 		extraArgsFunc = buildArgsForConfig
-	} else {
+	} else if c.NArg() == 1 {
 		extraArgsFunc = buildArgsForToken
+	} else if c.NArg() == 2 {
+	    extraArgsFunc = buildArgsForTokenAndEdgeTunnel
+	} else {
+	    return fmt.Errorf("number of args is not supported")
 	}
 
 	extraArgs, err := extraArgsFunc(c, log)

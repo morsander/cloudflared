@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net"
 	"time"
+	"strconv"
+	"strings"
 
 	"github.com/pkg/errors"
 	"github.com/rs/zerolog"
@@ -109,8 +111,42 @@ var friendlyDNSErrorLines = []string{
 }
 
 // EdgeDiscovery implements HA service discovery lookup.
-func edgeDiscovery(log *zerolog.Logger, srvService string) ([][]*EdgeAddr, error) {
+func edgeDiscovery(log *zerolog.Logger, srvService string, edgeTunnel string) ([][]*EdgeAddr, error) {
 	logger := log.With().Int(management.EventTypeKey, int(management.Cloudflared)).Logger()
+	// If tunnelProxy is provided, use it directly and bypass SRV lookup
+	if edgeTunnel != "" {
+        ipPort := strings.Split(edgeTunnel, ":")
+        if len(ipPort) != 2 {
+            return nil, fmt.Errorf("edgeTunnel value should be in the format <ip>:<port>")
+        }
+        ip := ipPort[0]
+        if net.ParseIP(ip) == nil {
+            addresses, err := net.LookupHost(ip)
+            if err != nil {
+                return nil, fmt.Errorf("Error resolving hostname: %s", err)
+            } else if len(addresses) > 0 {
+                ip = addresses[0]
+            } else {
+                return nil, fmt.Errorf("Error resolving hostname")
+            }
+        }
+        port, err := strconv.Atoi(ipPort[1])
+        if err != nil {
+            return nil, fmt.Errorf("invalid port value in edgeTunnel: %s", err)
+        }
+        logger.Info().Msgf("Tunnel proxy ip is %s and port is %d", ip, port)
+        staticAddr1 := &EdgeAddr{
+        TCP:       &net.TCPAddr{IP: net.ParseIP(ip), Port: port},
+        UDP:       &net.UDPAddr{IP: net.ParseIP(ip), Port: port},
+        IPVersion: V4,
+        }
+        staticAddr2 := &EdgeAddr{
+        TCP:       &net.TCPAddr{IP: net.ParseIP(ip), Port: port},
+        UDP:       &net.UDPAddr{IP: net.ParseIP(ip), Port: port},
+        IPVersion: V4,
+        }
+        return [][]*EdgeAddr{{staticAddr1, staticAddr2}}, nil
+    }
 	logger.Debug().
 		Int(management.EventTypeKey, int(management.Cloudflared)).
 		Str("domain", "_"+srvService+"._"+srvProto+"."+srvName).

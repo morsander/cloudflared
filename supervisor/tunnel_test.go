@@ -47,6 +47,7 @@ func TestWaitForBackoffFallback(t *testing.T) {
 		mockFetcher.fetch(),
 		resolveTTL,
 		&log,
+		false,
 	)
 	assert.NoError(t, err)
 
@@ -110,6 +111,7 @@ func TestWaitForBackoffFallback(t *testing.T) {
 		mockFetcher.fetch(),
 		resolveTTL,
 		&log,
+		false,
 	)
 	assert.NoError(t, err)
 	protoFallback = &protocolFallback{backoff, protocolSelector.Current(), false}

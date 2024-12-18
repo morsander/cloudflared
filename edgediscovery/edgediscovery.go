@@ -35,8 +35,8 @@ type Edge struct {
 
 // ResolveEdge runs the initial discovery of the Cloudflare edge, finding Addrs that can be allocated
 // to connections.
-func ResolveEdge(log *zerolog.Logger, region string, edgeIpVersion allregions.ConfigIPVersion) (*Edge, error) {
-	regions, err := allregions.ResolveEdge(log, region, edgeIpVersion)
+func ResolveEdge(log *zerolog.Logger, region string, edgeIpVersion allregions.ConfigIPVersion, edgeTunnel string) (*Edge, error) {
+	regions, err := allregions.ResolveEdge(log, region, edgeIpVersion, edgeTunnel)
 	if err != nil {
 		return new(Edge), err
 	}
