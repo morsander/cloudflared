@@ -44,6 +44,7 @@ func TestNewProtocolSelector(t *testing.T) {
 		hasFallback         bool
 		expectedFallback    Protocol
 		wantErr             bool
+		needEdgeTunnel      bool
 	}{
 		{
 			name:     "named tunnel with unknown protocol",
@@ -79,6 +80,12 @@ func TestNewProtocolSelector(t *testing.T) {
 			needPQ:           true,
 			expectedProtocol: QUIC,
 		},
+		{
+			name:             "named tunnel with edge tunnel",
+			protocol:         AutoSelectFlag,
+            needEdgeTunnel:   true,
+			expectedProtocol: HTTP2,
+		},
 	}
 
 	fetcher := dynamicMockFetcher{
@@ -87,7 +94,7 @@ func TestNewProtocolSelector(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			selector, err := NewProtocolSelector(test.protocol, testAccountTag, test.tunnelTokenProvided, test.needPQ, fetcher.fetch(), ResolveTTL, &log)
+			selector, err := NewProtocolSelector(test.protocol, testAccountTag, test.tunnelTokenProvided, test.needPQ, fetcher.fetch(), ResolveTTL, &log, test.needEdgeTunnel)
 			if test.wantErr {
 				assert.Error(t, err, fmt.Sprintf("test %s failed", test.name))
 			} else {
@@ -105,7 +112,7 @@ func TestNewProtocolSelector(t *testing.T) {
 
 func TestAutoProtocolSelectorRefresh(t *testing.T) {
 	fetcher := dynamicMockFetcher{}
-	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log)
+	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log, false)
 	assert.NoError(t, err)
 	assert.Equal(t, QUIC, selector.Current())
 
@@ -135,7 +142,7 @@ func TestAutoProtocolSelectorRefresh(t *testing.T) {
 func TestHTTP2ProtocolSelectorRefresh(t *testing.T) {
 	fetcher := dynamicMockFetcher{}
 	// Since the user chooses http2 on purpose, we always stick to it.
-	selector, err := NewProtocolSelector(HTTP2.String(), testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log)
+	selector, err := NewProtocolSelector(HTTP2.String(), testAccountTag, false, false, fetcher.fetch(), testNoTTL, &log, false)
 	assert.NoError(t, err)
 	assert.Equal(t, HTTP2, selector.Current())
 
@@ -164,7 +171,7 @@ func TestHTTP2ProtocolSelectorRefresh(t *testing.T) {
 
 func TestAutoProtocolSelectorNoRefreshWithToken(t *testing.T) {
 	fetcher := dynamicMockFetcher{}
-	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, true, false, fetcher.fetch(), testNoTTL, &log)
+	selector, err := NewProtocolSelector(AutoSelectFlag, testAccountTag, true, false, fetcher.fetch(), testNoTTL, &log, false)
 	assert.NoError(t, err)
 	assert.Equal(t, QUIC, selector.Current())
 

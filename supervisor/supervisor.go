@@ -71,7 +71,7 @@ func NewSupervisor(config *TunnelConfig, orchestrator *orchestration.Orchestrato
 	if isStaticEdge { // static edge addresses
 		edgeIPs, err = edgediscovery.StaticEdge(config.Log, config.EdgeAddrs)
 	} else {
-		edgeIPs, err = edgediscovery.ResolveEdge(config.Log, config.Region, config.EdgeIPVersion)
+		edgeIPs, err = edgediscovery.ResolveEdge(config.Log, config.Region, config.EdgeIPVersion, config.EdgeTunnel)
 	}
 	if err != nil {
 		return nil, err

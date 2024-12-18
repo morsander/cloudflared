@@ -42,7 +42,7 @@ var (
 
 	secretFlags = [2]*altsrc.StringFlag{credentialsContentsFlag, tunnelTokenFlag}
 
-	configFlags = []string{"autoupdate-freq", "no-autoupdate", "retries", "protocol", "loglevel", "transport-loglevel", "origincert", "metrics", "metrics-update-freq", "edge-ip-version", "edge-bind-address"}
+	configFlags = []string{"autoupdate-freq", "no-autoupdate", "retries", "protocol", "loglevel", "transport-loglevel", "origincert", "metrics", "metrics-update-freq", "edge-ip-version", "edge-bind-address", "edge-tunnel"}
 )
 
 func generateRandomClientID(log *zerolog.Logger) (string, error) {
@@ -166,6 +166,9 @@ func prepareTunnelConfig(
 		)
 	}
 
+    edgeTunnelString := c.String("edge-tunnel")
+    edgeTunnel := edgeTunnelString != ""
+
 	namedTunnel.Client = pogs.ClientInfo{
 		ClientID: clientID[:],
 		Features: clientFeatures,
@@ -178,7 +181,7 @@ func prepareTunnelConfig(
 		return nil, nil, err
 	}
 
-	protocolSelector, err := connection.NewProtocolSelector(transportProtocol, namedTunnel.Credentials.AccountTag, c.IsSet(TunnelTokenFlag), c.Bool("post-quantum"), edgediscovery.ProtocolPercentage, connection.ResolveTTL, log)
+	protocolSelector, err := connection.NewProtocolSelector(transportProtocol, namedTunnel.Credentials.AccountTag, c.IsSet(TunnelTokenFlag), c.Bool("post-quantum"), edgediscovery.ProtocolPercentage, connection.ResolveTTL, log, edgeTunnel)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -233,6 +236,7 @@ func prepareTunnelConfig(
 		HAConnections:   c.Int(haConnectionsFlag),
 		IsAutoupdated:   c.Bool("is-autoupdated"),
 		LBPool:          c.String("lb-pool"),
+		EdgeTunnel:      c.String("edge-tunnel"),
 		Tags:            tags,
 		Log:             log,
 		LogTransport:    logTransport,

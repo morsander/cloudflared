@@ -242,7 +242,7 @@ func (sc *subcommandContext) findCredentials(tunnelID uuid.UUID) (connection.Cre
 	return credentials, err
 }
 
-func (sc *subcommandContext) run(tunnelID uuid.UUID) error {
+func (sc *subcommandContext) run(tunnelID uuid.UUID, edgeTunnel string) error {
 	credentials, err := sc.findCredentials(tunnelID)
 	if err != nil {
 		if e, ok := err.(errInvalidJSONCredential); ok {
@@ -252,10 +252,10 @@ func (sc *subcommandContext) run(tunnelID uuid.UUID) error {
 		return err
 	}
 
-	return sc.runWithCredentials(credentials)
+	return sc.runWithCredentials(credentials, edgeTunnel)
 }
 
-func (sc *subcommandContext) runWithCredentials(credentials connection.Credentials) error {
+func (sc *subcommandContext) runWithCredentials(credentials connection.Credentials, edgeTunnel string) error {
 	sc.log.Info().Str(LogFieldTunnelID, credentials.TunnelID.String()).Msg("Starting tunnel")
 
 	return StartServer(

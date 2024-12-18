@@ -17,6 +17,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+
+type echoReply struct {
+    Address       netip.Addr // or any other type as per your requirement
+    Status        int        // success, destHostUnreachable, etc.
+    RoundTripTime uint32     // Round trip time in milliseconds
+    DataSize      uint16     // Size of the data
+    DataPointer   *byte      // Pointer to the data byte array
+    Options       ipOption   // Additional IP options like TTL
+}
+
 // TestParseEchoReply tests parsing raw bytes from icmpSendEcho into echoResp
 func TestParseEchoReply(t *testing.T) {
 	dst, err := inAddrV4(netip.MustParseAddr("192.168.10.20"))
