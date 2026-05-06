@@ -54,6 +54,7 @@ var (
 		flags.EdgeIpVersion,
 		flags.EdgeBindAddress,
 		flags.MaxActiveFlows,
+		flags.EdgeTunnel,
 	}
 )
 
@@ -156,7 +157,10 @@ func prepareTunnelConfig(
 		return nil, nil, err
 	}
 
-	protocolSelector, err := connection.NewProtocolSelector(transportProtocol, namedTunnel.Credentials.AccountTag, c.IsSet(TunnelTokenFlag), isPostQuantumEnforced, edgediscovery.ProtocolPercentage, connection.ResolveTTL, log)
+	edgeTunnelString := c.String(flags.EdgeTunnel)
+	edgeTunnel := edgeTunnelString != ""
+
+	protocolSelector, err := connection.NewProtocolSelector(transportProtocol, namedTunnel.Credentials.AccountTag, c.IsSet(TunnelTokenFlag), isPostQuantumEnforced, edgediscovery.ProtocolPercentage, connection.ResolveTTL, log, edgeTunnel)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -239,6 +243,7 @@ func prepareTunnelConfig(
 		GracePeriod:     gracePeriod,
 		EdgeAddrs:       c.StringSlice(flags.Edge),
 		Region:          resolvedRegion,
+		EdgeTunnel:      c.String(flags.EdgeTunnel),
 		EdgeIPVersion:   edgeIPVersion,
 		EdgeBindAddr:    edgeBindAddr,
 		HAConnections:   c.Int(flags.HaConnections),

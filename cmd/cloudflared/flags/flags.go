@@ -81,6 +81,9 @@ const (
 	// EdgeBindAddress is the command line flag to bind to IP address for outgoing connections to Cloudflare Edge
 	EdgeBindAddress = "edge-bind-address"
 
+	// EdgeTunnel is the command line flag to set the port and ip of the edge tunnel
+	EdgeTunnel = "edge-tunnel"
+
 	// Force is the command line flag to specify if you wish to force an action
 	Force = "force"
 

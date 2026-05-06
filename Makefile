@@ -146,7 +146,7 @@ cloudflared:
 ifeq ($(FIPS), true)
 	$(info Building cloudflared with go-fips)
 endif
-	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) $(ARM_COMMAND) go build -mod=vendor $(GO_BUILD_TAGS) $(LDFLAGS) $(IMPORT_PATH)/cmd/cloudflared
+	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) $(ARM_COMMAND) go build $(GO_BUILD_TAGS) $(LDFLAGS) $(IMPORT_PATH)/cmd/cloudflared
 ifeq ($(FIPS), true)
 	./check-fips.sh cloudflared
 endif
@@ -162,7 +162,7 @@ generate-docker-version:
 
 .PHONY: test
 test: vet
-	$Q go test -json -v -mod=vendor -race $(LDFLAGS) ./... 2>&1 | tee $(GO_TEST_LOG_OUTPUT)
+	$Q go test -json -v -race $(LDFLAGS) ./... 2>&1 | tee $(GO_TEST_LOG_OUTPUT)
 ifneq ($(FIPS), true)
 	@go run -mod=readonly github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest -input $(GO_TEST_LOG_OUTPUT)
 endif

@@ -235,6 +235,7 @@ func TunnelCommand(c *cli.Context) error {
 	// --name required
 	// --url or --hello-world required
 	// --hostname optional
+	edgeTunnel := c.String("edge-tunnel")
 	if name := c.String(cfdflags.Name); name != "" {
 		hostname, err := validation.ValidateHostname(c.String("hostname"))
 		if err != nil {
@@ -245,7 +246,7 @@ func TunnelCommand(c *cli.Context) error {
 			return fmt.Errorf("hostname and url shouldn't match. See --help for more information")
 		}
 
-		return runAdhocNamedTunnel(sc, name, c.String(CredFileFlag))
+		return runAdhocNamedTunnel(sc, name, c.String(CredFileFlag), edgeTunnel)
 	}
 
 	// Run a quick tunnel
@@ -273,7 +274,7 @@ func Init(info *cliutil.BuildInfo, gracefulShutdown chan struct{}) {
 }
 
 // runAdhocNamedTunnel create, route and run a named tunnel in one command
-func runAdhocNamedTunnel(sc *subcommandContext, name, credentialsOutputPath string) error {
+func runAdhocNamedTunnel(sc *subcommandContext, name, credentialsOutputPath string, edgeTunnel string) error {
 	tunnel, ok, err := sc.tunnelActive(name)
 	if err != nil || !ok {
 		// pass empty string as secret to generate one
@@ -293,7 +294,7 @@ func runAdhocNamedTunnel(sc *subcommandContext, name, credentialsOutputPath stri
 		}
 	}
 
-	if err := sc.run(tunnel.ID); err != nil {
+	if err := sc.run(tunnel.ID, edgeTunnel); err != nil {
 		return errors.Wrap(err, "error running tunnel")
 	}
 
@@ -389,6 +390,8 @@ func StartServer(
 		errC <- autoupdater.Run(ctx)
 	}()
 
+    edgeTunnel := c.String("edge-tunnel")
+
 	if namedTunnel == nil {
 		return fmt.Errorf("namedTunnel is nil")
 	}
@@ -416,7 +419,7 @@ func StartServer(
 	}
 
 	serviceIP := c.String("service-op-ip")
-	if edgeAddrs, err := edgediscovery.ResolveEdge(log, tunnelConfig.Region, tunnelConfig.EdgeIPVersion); err == nil {
+	if edgeAddrs, err := edgediscovery.ResolveEdge(log, tunnelConfig.Region, tunnelConfig.EdgeIPVersion, edgeTunnel); err == nil {
 		if serviceAddr, err := edgeAddrs.GetAddrForRPC(); err == nil {
 			serviceIP = serviceAddr.TCP.String()
 		}
@@ -894,6 +897,13 @@ and virtualized host network stacks from each other`,
 			Name:    "pidfile",
 			Usage:   "Write the application's PID to this file after first successful connection.",
 			EnvVars: []string{"TUNNEL_PIDFILE"},
+			Hidden:  shouldHide,
+		}),
+        altsrc.NewStringFlag(&cli.StringFlag{
+			Name:    "edge-tunnel",
+			Usage:   "port and ip of the edge tunnel",
+			EnvVars: []string{"EDGE_TUNNEL"},
+			Value:   "",
 			Hidden:  shouldHide,
 		}),
 	}
