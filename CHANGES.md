@@ -1,3 +1,26 @@
+## 2026.2.0
+### Breaking Change
+- Removes the `proxy-dns` feature from cloudflared. This feature allowed running a local DNS over HTTPS (DoH) proxy.
+  Users who relied on this functionality should migrate to alternative solutions.
+  
+  Removed commands and flags:
+  - `cloudflared proxy-dns`
+  - `cloudflared tunnel proxy-dns` 
+  - `--proxy-dns`, `--proxy-dns-port`, `--proxy-dns-address`, `--proxy-dns-upstream`, `--proxy-dns-max-upstream-conns`, `--proxy-dns-bootstrap`
+  - `resolver` section in configuration file
+
+## 2025.7.1
+### Notices
+- `cloudflared` will no longer officially support Debian and Ubuntu distros that reached end-of-life: `buster`, `bullseye`, `impish`, `trusty`.
+
+## 2025.1.1
+### New Features
+- This release introduces the use of new Post Quantum curves and the ability to use Post Quantum curves when running tunnels with the QUIC protocol this applies to non-FIPS and FIPS builds.
+
+## 2024.12.2
+### New Features
+- This release introduces the ability to collect troubleshooting information from one instance of cloudflared running on the local machine. The command can be executed as `cloudflared tunnel diag`.
+
 ## 2024.12.1
 ### Notices
 - The use of the `--metrics` is still honoured meaning that if this flag is set the metrics server will try to bind it, however, this version includes a change that makes the metrics server bind to a port with a semi-deterministic approach. If the metrics flag is not present the server will bind to the first available port of the range 20241 to 20245. In case of all ports being unavailable then the fallback is to bind to a random port.
@@ -269,7 +292,7 @@ of uptime. Previous cloudflared versions will soon be unable to run legacy tempo
 ### Bug Fixes
 
 - Tunnel create and delete commands no longer use path to credentials from the configuration file.
-  If you need ot place tunnel credentials file at a specific location, you must use `--credentials-file` flag.
+  If you need to place tunnel credentials file at a specific location, you must use `--credentials-file` flag.
 - Access ssh-gen creates properly named keys for SSH short lived certs.
 
 

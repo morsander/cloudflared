@@ -4,18 +4,24 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"slices"
+	"sort"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fortytw2/leaktest"
 	"github.com/google/gopacket/layers"
 	"github.com/rs/zerolog"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 
+	cfdflow "github.com/cloudflare/cloudflared/flow"
 	"github.com/cloudflare/cloudflared/ingress"
 	"github.com/cloudflare/cloudflared/packet"
 	v3 "github.com/cloudflare/cloudflared/quic/v3"
@@ -83,7 +89,11 @@ func (m *mockEyeball) SendICMPTTLExceed(icmp *packet.ICMP, rawPacket packet.RawP
 
 func TestDatagramConn_New(t *testing.T) {
 	log := zerolog.Nop()
-	conn := v3.NewDatagramConn(newMockQuicConn(), v3.NewSessionManager(&noopMetrics{}, &log, ingress.DialUDPAddrPort), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
+		DefaultDialer:   testDefaultDialer,
+		TCPWriteTimeout: 0,
+	}, &log)
+	conn := v3.NewDatagramConn(newMockQuicConn(t.Context()), v3.NewSessionManager(&noopMetrics{}, &log, originDialerService, cfdflow.NewLimiter(0)), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 	if conn == nil {
 		t.Fatal("expected valid connection")
 	}
@@ -91,11 +101,19 @@ func TestDatagramConn_New(t *testing.T) {
 
 func TestDatagramConn_SendUDPSessionDatagram(t *testing.T) {
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
-	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, ingress.DialUDPAddrPort), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
+		DefaultDialer:   testDefaultDialer,
+		TCPWriteTimeout: 0,
+	}, &log)
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
+	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, originDialerService, cfdflow.NewLimiter(0)), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
 	payload := []byte{0xef, 0xef}
-	conn.SendUDPSessionDatagram(payload)
+	err := conn.SendUDPSessionDatagram(payload)
+	require.NoError(t, err)
+
 	p := <-quic.recv
 	if !slices.Equal(p, payload) {
 		t.Fatal("datagram sent does not match datagram received on quic side")
@@ -104,16 +122,23 @@ func TestDatagramConn_SendUDPSessionDatagram(t *testing.T) {
 
 func TestDatagramConn_SendUDPSessionResponse(t *testing.T) {
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
-	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, ingress.DialUDPAddrPort), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
+		DefaultDialer:   testDefaultDialer,
+		TCPWriteTimeout: 0,
+	}, &log)
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
+	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, originDialerService, cfdflow.NewLimiter(0)), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
-	conn.SendUDPSessionResponse(testRequestID, v3.ResponseDestinationUnreachable)
+	err := conn.SendUDPSessionResponse(testRequestID, v3.ResponseDestinationUnreachable)
+	require.NoError(t, err)
+
 	resp := <-quic.recv
 	var response v3.UDPSessionRegistrationResponseDatagram
-	err := response.UnmarshalBinary(resp)
-	if err != nil {
-		t.Fatal(err)
-	}
+	err = response.UnmarshalBinary(resp)
+	require.NoError(t, err)
+
 	expected := v3.UDPSessionRegistrationResponseDatagram{
 		RequestID:    testRequestID,
 		ResponseType: v3.ResponseDestinationUnreachable,
@@ -125,10 +150,16 @@ func TestDatagramConn_SendUDPSessionResponse(t *testing.T) {
 
 func TestDatagramConnServe_ApplicationClosed(t *testing.T) {
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
-	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, ingress.DialUDPAddrPort), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
+		DefaultDialer:   testDefaultDialer,
+		TCPWriteTimeout: 0,
+	}, &log)
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
+	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, originDialerService, cfdflow.NewLimiter(0)), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 	err := conn.Serve(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) {
@@ -138,13 +169,19 @@ func TestDatagramConnServe_ApplicationClosed(t *testing.T) {
 
 func TestDatagramConnServe_ConnectionClosed(t *testing.T) {
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
+		DefaultDialer:   testDefaultDialer,
+		TCPWriteTimeout: 0,
+	}, &log)
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
+	ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 	defer cancel()
 	quic.ctx = ctx
-	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, ingress.DialUDPAddrPort), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, originDialerService, cfdflow.NewLimiter(0)), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
-	err := conn.Serve(context.Background())
+	err := conn.Serve(t.Context())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
@@ -152,16 +189,57 @@ func TestDatagramConnServe_ConnectionClosed(t *testing.T) {
 
 func TestDatagramConnServe_ReceiveDatagramError(t *testing.T) {
 	log := zerolog.Nop()
+	originDialerService := ingress.NewOriginDialer(ingress.OriginConfig{
+		DefaultDialer:   testDefaultDialer,
+		TCPWriteTimeout: 0,
+	}, &log)
 	quic := &mockQuicConnReadError{err: net.ErrClosed}
-	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, ingress.DialUDPAddrPort), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+	conn := v3.NewDatagramConn(quic, v3.NewSessionManager(&noopMetrics{}, &log, originDialerService, cfdflow.NewLimiter(0)), &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
-	err := conn.Serve(context.Background())
+	err := conn.Serve(t.Context())
 	if !errors.Is(err, net.ErrClosed) {
 		t.Fatal(err)
 	}
 }
 
+func TestDatagramConnServe_SessionRegistrationRateLimit(t *testing.T) {
+	log := zerolog.Nop()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
+	sessionManager := &mockSessionManager{
+		expectedRegErr: v3.ErrSessionRegistrationRateLimited,
+	}
+	conn := v3.NewDatagramConn(quic, sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
+
+	// Setup the muxer
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(context.Canceled)
+	done := make(chan error, 1)
+	go func() {
+		done <- conn.Serve(ctx)
+	}()
+
+	// Send new session registration
+	datagram := newRegisterSessionDatagram(testRequestID)
+	quic.send <- datagram
+
+	// Wait for session registration response with failure
+	datagram = <-quic.recv
+	var resp v3.UDPSessionRegistrationResponseDatagram
+	err := resp.UnmarshalBinary(datagram)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.EqualValues(t, testRequestID, resp.RequestID)
+	require.EqualValues(t, v3.ResponseTooManyActiveFlows, resp.ResponseType)
+
+	assertContextClosed(t, ctx, done, cancel)
+}
+
 func TestDatagramConnServe_ErrorDatagramTypes(t *testing.T) {
+	defer leaktest.Check(t)()
 	for _, test := range []struct {
 		name     string
 		input    []byte
@@ -186,11 +264,13 @@ func TestDatagramConnServe_ErrorDatagramTypes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			logOutput := new(LockedBuffer)
 			log := zerolog.New(logOutput)
-			quic := newMockQuicConn()
+			connCtx, connCancel := context.WithCancelCause(t.Context())
+			defer connCancel(context.Canceled)
+			quic := newMockQuicConn(connCtx)
 			quic.send <- test.input
 			conn := v3.NewDatagramConn(quic, &mockSessionManager{}, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
-			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 			defer cancel()
 			err := conn.Serve(ctx)
 			// we cancel the Serve method to check to see if the log output was written since the unsupported datagram
@@ -225,14 +305,17 @@ func (b *LockedBuffer) String() string {
 }
 
 func TestDatagramConnServe_RegisterSession_SessionManagerError(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	expectedErr := errors.New("unable to register session")
 	sessionManager := mockSessionManager{expectedRegErr: expectedErr}
 	conn := v3.NewDatagramConn(quic, &sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
@@ -260,14 +343,17 @@ func TestDatagramConnServe_RegisterSession_SessionManagerError(t *testing.T) {
 }
 
 func TestDatagramConnServe(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	session := newMockSession()
 	sessionManager := mockSessionManager{session: &session}
 	conn := v3.NewDatagramConn(quic, &sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
@@ -304,15 +390,108 @@ func TestDatagramConnServe(t *testing.T) {
 	assertContextClosed(t, ctx, done, cancel)
 }
 
-func TestDatagramConnServe_RegisterTwice(t *testing.T) {
+// This test exists because decoding multiple packets in parallel with the same decoder
+// instances causes inteference resulting in multiple different raw packets being decoded
+// as the same decoded packet.
+func TestDatagramConnServeDecodeMultipleICMPInParallel(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
+	session := newMockSession()
+	sessionManager := mockSessionManager{session: &session}
+	router := newMockICMPRouter()
+	conn := v3.NewDatagramConn(quic, &sessionManager, router, 0, &noopMetrics{}, &log)
+
+	// Setup the muxer
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(errors.New("other error"))
+	done := make(chan error, 1)
+	go func() {
+		done <- conn.Serve(ctx)
+	}()
+
+	packetCount := 100
+	packets := make([]*packet.ICMP, 100)
+	ipTemplate := "10.0.0.%d"
+	for i := 1; i <= packetCount; i++ {
+		packets[i-1] = &packet.ICMP{
+			IP: &packet.IP{
+				Src:      netip.MustParseAddr("192.168.1.1"),
+				Dst:      netip.MustParseAddr(fmt.Sprintf(ipTemplate, i)),
+				Protocol: layers.IPProtocolICMPv4,
+				TTL:      20,
+			},
+			Message: &icmp.Message{
+				Type: ipv4.ICMPTypeEcho,
+				Code: 0,
+				Body: &icmp.Echo{
+					ID:   25821,
+					Seq:  58129,
+					Data: []byte("test"),
+				},
+			},
+		}
+	}
+
+	wg := sync.WaitGroup{}
+	var receivedPackets []*packet.ICMP
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case icmpPacket := <-router.recv:
+				receivedPackets = append(receivedPackets, icmpPacket)
+				wg.Done()
+			}
+		}
+	}()
+
+	for _, p := range packets {
+		// We increment here but only decrement when receiving the packet
+		wg.Add(1)
+		go func() {
+			datagram := newICMPDatagram(p)
+			quic.send <- datagram
+		}()
+	}
+
+	wg.Wait()
+
+	// If there were duplicates then we won't have the same number of IPs
+	packetSet := make(map[netip.Addr]*packet.ICMP, 0)
+	for _, p := range receivedPackets {
+		packetSet[p.Dst] = p
+	}
+	assert.Equal(t, len(packetSet), len(packets))
+
+	// Sort the slice by last byte of IP address (the one we increment for each destination)
+	// and then check that we have one match for each packet sent
+	sort.Slice(receivedPackets, func(i, j int) bool {
+		return receivedPackets[i].Dst.As4()[3] < receivedPackets[j].Dst.As4()[3]
+	})
+	for i, p := range receivedPackets {
+		assert.Equal(t, p.Dst, packets[i].Dst)
+	}
+
+	// Cancel the muxer Serve context and make sure it closes with the expected error
+	assertContextClosed(t, ctx, done, cancel)
+}
+
+func TestDatagramConnServe_RegisterTwice(t *testing.T) {
+	defer leaktest.Check(t)()
+	log := zerolog.Nop()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	session := newMockSession()
 	sessionManager := mockSessionManager{session: &session}
 	conn := v3.NewDatagramConn(quic, &sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
@@ -367,23 +546,28 @@ func TestDatagramConnServe_RegisterTwice(t *testing.T) {
 }
 
 func TestDatagramConnServe_MigrateConnection(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	session := newMockSession()
 	sessionManager := mockSessionManager{session: &session}
 	conn := v3.NewDatagramConn(quic, &sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
-	quic2 := newMockQuicConn()
+	conn2Ctx, conn2Cancel := context.WithCancelCause(t.Context())
+	defer conn2Cancel(context.Canceled)
+	quic2 := newMockQuicConn(conn2Ctx)
 	conn2 := v3.NewDatagramConn(quic2, &sessionManager, &noopICMPRouter{}, 1, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
 		done <- conn.Serve(ctx)
 	}()
 
-	ctx2, cancel2 := context.WithCancelCause(context.Background())
+	ctx2, cancel2 := context.WithCancelCause(t.Context())
 	defer cancel2(errors.New("other error"))
 	done2 := make(chan error, 1)
 	go func() {
@@ -450,14 +634,17 @@ func TestDatagramConnServe_MigrateConnection(t *testing.T) {
 }
 
 func TestDatagramConnServe_Payload_GetSessionError(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	// mockSessionManager will return the ErrSessionNotFound for any session attempting to be queried by the muxer
 	sessionManager := mockSessionManager{session: nil, expectedGetErr: v3.ErrSessionNotFound}
 	conn := v3.NewDatagramConn(quic, &sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
@@ -477,30 +664,44 @@ func TestDatagramConnServe_Payload_GetSessionError(t *testing.T) {
 	assertContextClosed(t, ctx, done, cancel)
 }
 
-func TestDatagramConnServe_Payload(t *testing.T) {
+func TestDatagramConnServe_Payloads(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	session := newMockSession()
 	sessionManager := mockSessionManager{session: &session}
 	conn := v3.NewDatagramConn(quic, &sessionManager, &noopICMPRouter{}, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
 		done <- conn.Serve(ctx)
 	}()
 
-	// Send new session registration
-	expectedPayload := []byte{0xef, 0xef}
-	datagram := newSessionPayloadDatagram(testRequestID, expectedPayload)
-	quic.send <- datagram
+	// Send session payloads
+	expectedPayloads := makePayloads(256, 16)
+	go func() {
+		for _, payload := range expectedPayloads {
+			datagram := newSessionPayloadDatagram(testRequestID, payload)
+			quic.send <- datagram
+		}
+	}()
 
-	// Session should receive the payload
-	payload := <-session.recv
-	if !slices.Equal(expectedPayload, payload) {
-		t.Fatalf("expected session receieve the payload sent via the muxer")
+	// Session should receive the payloads (in-order)
+	for i, payload := range expectedPayloads {
+		select {
+		case recv := <-session.recv:
+			if !slices.Equal(recv, payload) {
+				t.Fatalf("expected session receieve the payload[%d] sent via the muxer: (%x) (%x)", i, recv[:16], payload[:16])
+			}
+		case err := <-ctx.Done():
+			// we expect the payload to return before the context to cancel on the session
+			t.Fatal(err)
+		}
 	}
 
 	// Cancel the muxer Serve context and make sure it closes with the expected error
@@ -508,13 +709,16 @@ func TestDatagramConnServe_Payload(t *testing.T) {
 }
 
 func TestDatagramConnServe_ICMPDatagram_TTLDecremented(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	router := newMockICMPRouter()
 	conn := v3.NewDatagramConn(quic, &mockSessionManager{}, router, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
@@ -554,13 +758,16 @@ func TestDatagramConnServe_ICMPDatagram_TTLDecremented(t *testing.T) {
 }
 
 func TestDatagramConnServe_ICMPDatagram_TTLExceeded(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	quic := newMockQuicConn()
+	connCtx, connCancel := context.WithCancelCause(t.Context())
+	defer connCancel(context.Canceled)
+	quic := newMockQuicConn(connCtx)
 	router := newMockICMPRouter()
 	conn := v3.NewDatagramConn(quic, &mockSessionManager{}, router, 0, &noopMetrics{}, &log)
 
 	// Setup the muxer
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(errors.New("other error"))
 	done := make(chan error, 1)
 	go func() {
@@ -588,7 +795,7 @@ func TestDatagramConnServe_ICMPDatagram_TTLExceeded(t *testing.T) {
 	datagram := newICMPDatagram(expectedICMP)
 	quic.send <- datagram
 
-	// Origin should not recieve a packet
+	// Origin should not receive a packet
 	select {
 	case <-router.recv:
 		t.Fatalf("TTL should be expired and no origin ICMP sent")
@@ -630,18 +837,6 @@ func newRegisterSessionDatagram(id v3.RequestID) []byte {
 	return payload
 }
 
-func newRegisterResponseSessionDatagram(id v3.RequestID, resp v3.SessionRegistrationResp) []byte {
-	datagram := v3.UDPSessionRegistrationResponseDatagram{
-		RequestID:    id,
-		ResponseType: resp,
-	}
-	payload, err := datagram.MarshalBinary()
-	if err != nil {
-		panic(err)
-	}
-	return payload
-}
-
 func newSessionPayloadDatagram(id v3.RequestID, payload []byte) []byte {
 	datagram := make([]byte, len(payload)+17)
 	err := v3.MarshalPayloadHeaderTo(id, datagram[:])
@@ -670,12 +865,12 @@ func newICMPDatagram(pk *packet.ICMP) []byte {
 
 // Cancel the provided context and make sure it closes with the expected cancellation error
 func assertContextClosed(t *testing.T, ctx context.Context, done <-chan error, cancel context.CancelCauseFunc) {
-	cancel(expectedContextCanceled)
+	cancel(errExpectedContextCanceled)
 	err := <-done
 	if !errors.Is(err, context.Canceled) {
 		t.Fatal(err)
 	}
-	if !errors.Is(context.Cause(ctx), expectedContextCanceled) {
+	if !errors.Is(context.Cause(ctx), errExpectedContextCanceled) {
 		t.Fatal(err)
 	}
 }
@@ -686,9 +881,9 @@ type mockQuicConn struct {
 	recv chan []byte
 }
 
-func newMockQuicConn() *mockQuicConn {
+func newMockQuicConn(ctx context.Context) *mockQuicConn {
 	return &mockQuicConn{
-		ctx:  context.Background(),
+		ctx:  ctx,
 		send: make(chan []byte, 1),
 		recv: make(chan []byte, 1),
 	}
@@ -706,7 +901,12 @@ func (m *mockQuicConn) SendDatagram(payload []byte) error {
 }
 
 func (m *mockQuicConn) ReceiveDatagram(_ context.Context) ([]byte, error) {
-	return <-m.send, nil
+	select {
+	case <-m.ctx.Done():
+		return nil, m.ctx.Err()
+	case b := <-m.send:
+		return b, nil
+	}
 }
 
 type mockQuicConnReadError struct {
@@ -770,11 +970,10 @@ func (m *mockSession) Serve(ctx context.Context) error {
 	return v3.SessionCloseErr
 }
 
-func (m *mockSession) Write(payload []byte) (n int, err error) {
+func (m *mockSession) Write(payload []byte) {
 	b := make([]byte, len(payload))
 	copy(b, payload)
 	m.recv <- b
-	return len(b), nil
 }
 
 func (m *mockSession) Close() error {

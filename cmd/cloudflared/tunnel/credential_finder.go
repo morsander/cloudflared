@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	cfdflags "github.com/cloudflare/cloudflared/cmd/cloudflared/flags"
 	"github.com/cloudflare/cloudflared/config"
 	"github.com/cloudflare/cloudflared/credentials"
 
@@ -57,17 +58,19 @@ func newSearchByID(id uuid.UUID, c *cli.Context, log *zerolog.Logger, fs fileSys
 }
 
 func (s searchByID) Path() (string, error) {
-	originCertPath := s.c.String(credentials.OriginCertFlag)
+	originCertPath := s.c.String(cfdflags.OriginCert)
 	originCertLog := s.log.With().
 		Str("originCertPath", originCertPath).
 		Logger()
 
-	// Fallback to look for tunnel credentials in the origin cert directory
-	if originCertPath, err := credentials.FindOriginCert(originCertPath, &originCertLog); err == nil {
-		originCertDir := filepath.Dir(originCertPath)
-		if filePath, err := tunnelFilePath(s.id, originCertDir); err == nil {
-			if s.fs.validFilePath(filePath) {
-				return filePath, nil
+	if originCertPath != "" {
+		// Look for tunnel credentials in the origin cert directory if the flag is provided
+		if originCertPath, err := credentials.FindOriginCert(originCertPath, &originCertLog); err == nil {
+			originCertDir := filepath.Dir(originCertPath)
+			if filePath, err := tunnelFilePath(s.id, originCertDir); err == nil {
+				if s.fs.validFilePath(filePath) {
+					return filePath, nil
+				}
 			}
 		}
 	}

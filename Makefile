@@ -24,13 +24,19 @@ else
 	DEB_PACKAGE_NAME := $(BINARY_NAME)
 endif
 
-DATE          := $(shell date -u '+%Y-%m-%d-%H%M UTC')
+# Use git in windows since we don't have access to the `date` tool
+ifeq ($(TARGET_OS), windows)
+	DATE := $(shell git log -1 --format="%ad" --date=format-local:'%Y-%m-%dT%H:%M UTC' -- RELEASE_NOTES)
+else
+	DATE := $(shell date -u -r RELEASE_NOTES '+%Y-%m-%d-%H:%M UTC')
+endif
+
 VERSION_FLAGS := -X "main.Version=$(VERSION)" -X "main.BuildTime=$(DATE)"
 ifdef PACKAGE_MANAGER
 	VERSION_FLAGS := $(VERSION_FLAGS) -X "github.com/cloudflare/cloudflared/cmd/cloudflared/updater.BuiltForPackageManager=$(PACKAGE_MANAGER)"
 endif
 
-ifdef CONTAINER_BUILD 
+ifdef CONTAINER_BUILD
 	VERSION_FLAGS := $(VERSION_FLAGS) -X "github.com/cloudflare/cloudflared/metrics.Runtime=virtual"
 endif
 
@@ -56,8 +62,6 @@ PACKAGE_DIR    := $(CURDIR)/packaging
 PREFIX         := /usr
 INSTALL_BINDIR := $(PREFIX)/bin/
 INSTALL_MANDIR := $(PREFIX)/share/man/man1/
-CF_GO_PATH     := /tmp/go
-PATH           := $(CF_GO_PATH)/bin:$(PATH)
 
 LOCAL_ARCH ?= $(shell uname -m)
 ifneq ($(GOARCH),)
@@ -66,6 +70,8 @@ else ifeq ($(LOCAL_ARCH),x86_64)
     TARGET_ARCH ?= amd64
 else ifeq ($(LOCAL_ARCH),amd64)
     TARGET_ARCH ?= amd64
+else ifeq ($(LOCAL_ARCH),386)
+    TARGET_ARCH ?= 386
 else ifeq ($(LOCAL_ARCH),i686)
     TARGET_ARCH ?= amd64
 else ifeq ($(shell echo $(LOCAL_ARCH) | head -c 5),armv8)
@@ -113,7 +119,7 @@ ifneq ($(TARGET_ARM), )
 	ARM_COMMAND := GOARM=$(TARGET_ARM)
 endif
 
-ifeq ($(TARGET_ARM), 7) 
+ifeq ($(TARGET_ARM), 7)
 	PACKAGE_ARCH := armhf
 else
 	PACKAGE_ARCH := $(TARGET_ARCH)
@@ -122,6 +128,8 @@ endif
 #for FIPS compliance, FPM defaults to MD5.
 RPM_DIGEST := --rpm-digest sha256
 
+GO_TEST_LOG_OUTPUT = /tmp/gotest.log
+
 .PHONY: all
 all: cloudflared test
 
@@ -129,15 +137,17 @@ all: cloudflared test
 clean:
 	go clean
 
+.PHONY: vulncheck
+vulncheck:
+	@./.ci/scripts/vuln-check.sh
+
 .PHONY: cloudflared
 cloudflared:
 ifeq ($(FIPS), true)
 	$(info Building cloudflared with go-fips)
-	cp -f fips/fips.go.linux-amd64 cmd/cloudflared/fips.go
 endif
 	GOOS=$(TARGET_OS) GOARCH=$(TARGET_ARCH) $(ARM_COMMAND) go build -mod=vendor $(GO_BUILD_TAGS) $(LDFLAGS) $(IMPORT_PATH)/cmd/cloudflared
 ifeq ($(FIPS), true)
-	rm -f cmd/cloudflared/fips.go
 	./check-fips.sh cloudflared
 endif
 
@@ -152,11 +162,9 @@ generate-docker-version:
 
 .PHONY: test
 test: vet
-ifndef CI
-# 	go test -v -mod=vendor -race $(LDFLAGS) ./...
-else
-	@mkdir -p .cover
-# 	go test -v -mod=vendor -race $(LDFLAGS) -coverprofile=".cover/c.out" ./...
+	$Q go test -json -v -mod=vendor -race $(LDFLAGS) ./... 2>&1 | tee $(GO_TEST_LOG_OUTPUT)
+ifneq ($(FIPS), true)
+	@go run -mod=readonly github.com/gotesttools/gotestfmt/v2/cmd/gotestfmt@latest -input $(GO_TEST_LOG_OUTPUT)
 endif
 
 .PHONY: cover
@@ -174,26 +182,17 @@ fuzz:
 	@go test -fuzz=FuzzIPDecoder -fuzztime=600s ./packet
 	@go test -fuzz=FuzzICMPDecoder -fuzztime=600s ./packet
 	@go test -fuzz=FuzzSessionWrite -fuzztime=600s ./quic/v3
-	@go test -fuzz=FuzzSessionServe -fuzztime=600s ./quic/v3
+	@go test -fuzz=FuzzSessionRead -fuzztime=600s ./quic/v3
 	@go test -fuzz=FuzzRegistrationDatagram -fuzztime=600s ./quic/v3
 	@go test -fuzz=FuzzPayloadDatagram -fuzztime=600s ./quic/v3
 	@go test -fuzz=FuzzRegistrationResponseDatagram -fuzztime=600s ./quic/v3
 	@go test -fuzz=FuzzNewIdentity -fuzztime=600s ./tracing
 	@go test -fuzz=FuzzNewAccessValidator -fuzztime=600s ./validation
 
-.PHONY: install-go
-install-go:
-	rm -rf ${CF_GO_PATH}
-	./.teamcity/install-cloudflare-go.sh
-
-.PHONY: cleanup-go
-cleanup-go:
-	rm -rf ${CF_GO_PATH}
-
 cloudflared.1: cloudflared_man_template
 	sed -e 's/\$${VERSION}/$(VERSION)/; s/\$${DATE}/$(DATE)/' cloudflared_man_template > cloudflared.1
 
-install: install-go cloudflared cloudflared.1 cleanup-go
+install: cloudflared cloudflared.1
 	mkdir -p $(DESTDIR)$(INSTALL_BINDIR) $(DESTDIR)$(INSTALL_MANDIR)
 	install -m755 cloudflared $(DESTDIR)$(INSTALL_BINDIR)/cloudflared
 	install -m644 cloudflared.1 $(DESTDIR)$(INSTALL_MANDIR)/cloudflared.1
@@ -222,10 +221,6 @@ cloudflared-deb: cloudflared cloudflared.1
 cloudflared-rpm: cloudflared cloudflared.1
 	$(call build_package,rpm)
 
-.PHONY: cloudflared-pkg
-cloudflared-pkg: cloudflared cloudflared.1
-	$(call build_package,osxpkg)
-
 .PHONY: cloudflared-msi
 cloudflared-msi:
 	wixl --define Version=$(VERSION) --define Path=$(EXECUTABLE_PATH) --output cloudflared-$(VERSION)-$(TARGET_ARCH).msi cloudflared.wxs
@@ -236,12 +231,17 @@ github-release-dryrun:
 
 .PHONY: github-release
 github-release:
-	python3 github_release.py --path $(PWD)/built_artifacts --release-version $(VERSION)
+	python3 github_release.py --path $(PWD)/artifacts/ --release-version $(VERSION)
 	python3 github_message.py --release-version $(VERSION)
 
 .PHONY: r2-linux-release
 r2-linux-release:
 	python3 ./release_pkgs.py
+
+.PHONY: r2-next-linux-release
+# Publishes to a separate R2 repository during GPG key rollover, using dual-key signing.
+r2-next-linux-release:
+	python3 ./release_pkgs.py --upload-repo-file
 
 .PHONY: capnp
 capnp:
@@ -251,8 +251,41 @@ capnp:
 
 .PHONY: vet
 vet:
-	go vet -mod=vendor github.com/cloudflare/cloudflared/...
+	$Q go vet -mod=vendor github.com/cloudflare/cloudflared/...
 
 .PHONY: fmt
 fmt:
-	goimports -l -w -local github.com/cloudflare/cloudflared $$(go list -mod=vendor -f '{{.Dir}}' -a ./... | fgrep -v tunnelrpc/proto)
+	@goimports -l -w -local github.com/cloudflare/cloudflared $$(go list -mod=vendor -f '{{.Dir}}' -a ./... | fgrep -v tunnelrpc/proto)
+	@go fmt $$(go list -mod=vendor -f '{{.Dir}}' -a ./... | fgrep -v tunnelrpc/proto)
+
+.PHONY: fmt-check
+fmt-check:
+	@./.ci/scripts/fmt-check.sh
+
+.PHONY: lint
+lint:
+	@golangci-lint run
+
+.PHONY: mocks
+mocks:
+	go generate mocks/mockgen.go
+
+.PHONY: ci-build
+ci-build:
+	@GOOS=linux GOARCH=amd64 $(MAKE) cloudflared
+	@mkdir -p artifacts
+	@mv cloudflared artifacts/cloudflared
+
+.PHONY: ci-fips-build
+ci-fips-build:
+	@FIPS=true GOOS=linux GOARCH=amd64 $(MAKE) cloudflared
+	@mkdir -p artifacts
+	@mv cloudflared artifacts/cloudflared
+
+.PHONY: ci-test
+ci-test: fmt-check lint test
+	@go run -mod=readonly github.com/jstemmer/go-junit-report/v2@latest -in $(GO_TEST_LOG_OUTPUT) -parser gojson -out report.xml -set-exit-code
+
+.PHONY: ci-fips-test
+ci-fips-test:
+	@FIPS=true $(MAKE) ci-test

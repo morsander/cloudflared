@@ -11,25 +11,26 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/google/uuid"
-	homedir "github.com/mitchellh/go-homedir"
+	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/errors"
 	"github.com/urfave/cli/v2"
 	"github.com/urfave/cli/v2/altsrc"
 	"golang.org/x/net/idna"
-	yaml "gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v3"
 
 	"github.com/cloudflare/cloudflared/cfapi"
 	"github.com/cloudflare/cloudflared/cmd/cloudflared/cliutil"
+	"github.com/cloudflare/cloudflared/cmd/cloudflared/flags"
 	"github.com/cloudflare/cloudflared/cmd/cloudflared/updater"
 	"github.com/cloudflare/cloudflared/config"
 	"github.com/cloudflare/cloudflared/connection"
 	"github.com/cloudflare/cloudflared/diagnostic"
+	"github.com/cloudflare/cloudflared/fips"
 	"github.com/cloudflare/cloudflared/metrics"
 )
 
@@ -40,7 +41,7 @@ const (
 	CredFileFlag            = "credentials-file"
 	CredContentsFlag        = "credentials-contents"
 	TunnelTokenFlag         = "token"
-	EdgeTunnelFlag          = "edge-tunnel"
+	TunnelTokenFileFlag     = "token-file"
 	overwriteDNSFlagName    = "overwrite-dns"
 	noDiagLogsFlagName      = "no-diag-logs"
 	noDiagMetricsFlagName   = "no-diag-metrics"
@@ -49,7 +50,6 @@ const (
 	noDiagNetworkFlagName   = "no-diag-network"
 	diagContainerIDFlagName = "diag-container-id"
 	diagPodFlagName         = "diag-pod-id"
-	metricsFlagName         = "metrics"
 
 	LogFieldTunnelID = "tunnelID"
 )
@@ -61,7 +61,7 @@ var (
 		Usage:   "Include deleted tunnels in the list",
 	}
 	listNameFlag = &cli.StringFlag{
-		Name:    "name",
+		Name:    flags.Name,
 		Aliases: []string{"n"},
 		Usage:   "List tunnels with the given `NAME`",
 	}
@@ -109,7 +109,7 @@ var (
 		EnvVars: []string{"TUNNEL_LIST_INVERT_SORT"},
 	}
 	featuresFlag = altsrc.NewStringSliceFlag(&cli.StringSliceFlag{
-		Name:    "features",
+		Name:    flags.Features,
 		Aliases: []string{"F"},
 		Usage:   "Opt into various features that are still being developed or tested.",
 	})
@@ -127,36 +127,35 @@ var (
 	})
 	tunnelTokenFlag = altsrc.NewStringFlag(&cli.StringFlag{
 		Name:    TunnelTokenFlag,
-		Usage:   "The Tunnel token. When provided along with credentials, this will take precedence.",
+		Usage:   "The Tunnel token. When provided along with credentials, this will take precedence. Also takes precedence over token-file",
 		EnvVars: []string{"TUNNEL_TOKEN"},
 	})
+	tunnelTokenFileFlag = altsrc.NewStringFlag(&cli.StringFlag{
+		Name:    TunnelTokenFileFlag,
+		Usage:   "Filepath at which to read the tunnel token. When provided along with credentials, this will take precedence.",
+		EnvVars: []string{"TUNNEL_TOKEN_FILE"},
+	})
 	forceDeleteFlag = &cli.BoolFlag{
-		Name:    "force",
+		Name:    flags.Force,
 		Aliases: []string{"f"},
 		Usage: "Deletes a tunnel even if tunnel is connected and it has dependencies associated to it. (eg. IP routes)." +
 			" It is not possible to delete tunnels that have connections or non-deleted dependencies, without this flag.",
 		EnvVars: []string{"TUNNEL_RUN_FORCE_OVERWRITE"},
 	}
 	selectProtocolFlag = altsrc.NewStringFlag(&cli.StringFlag{
-		Name:    "protocol",
+		Name:    flags.Protocol,
 		Value:   connection.AutoSelectFlag,
 		Aliases: []string{"p"},
 		Usage:   fmt.Sprintf("Protocol implementation to connect with Cloudflare's edge network. %s", connection.AvailableProtocolFlagMessage),
 		EnvVars: []string{"TUNNEL_TRANSPORT_PROTOCOL"},
 		Hidden:  true,
 	})
-	tunnelProxyFlag = altsrc.NewStringFlag(&cli.StringFlag{
-        Name:    EdgeTunnelFlag,
-        Usage:   "Specify a tunnel to use when discovering the edge.",
-        EnvVars: []string{"EDGE_TUNNEL"},
-        Hidden:  false,
-    })
 	postQuantumFlag = altsrc.NewBoolFlag(&cli.BoolFlag{
-		Name:    "post-quantum",
+		Name:    flags.PostQuantum,
 		Usage:   "When given creates an experimental post-quantum secure tunnel",
 		Aliases: []string{"pq"},
 		EnvVars: []string{"TUNNEL_POST_QUANTUM"},
-		Hidden:  FipsEnabled,
+		Hidden:  fips.IsFipsEnabled(),
 	})
 	sortInfoByFlag = &cli.StringFlag{
 		Name:    "sort-by",
@@ -188,17 +187,17 @@ var (
 		EnvVars: []string{"TUNNEL_CREATE_SECRET"},
 	}
 	icmpv4SrcFlag = &cli.StringFlag{
-		Name:    "icmpv4-src",
+		Name:    flags.ICMPV4Src,
 		Usage:   "Source address to send/receive ICMPv4 messages. If not provided cloudflared will dial a local address to determine the source IP or fallback to 0.0.0.0.",
 		EnvVars: []string{"TUNNEL_ICMPV4_SRC"},
 	}
 	icmpv6SrcFlag = &cli.StringFlag{
-		Name:    "icmpv6-src",
+		Name:    flags.ICMPV6Src,
 		Usage:   "Source address and the interface name to send/receive ICMPv6 messages. If not provided cloudflared will dial a local address to determine the source IP or fallback to ::.",
 		EnvVars: []string{"TUNNEL_ICMPV6_SRC"},
 	}
 	metricsFlag = &cli.StringFlag{
-		Name:  metricsFlagName,
+		Name:  flags.Metrics,
 		Usage: "The metrics server address i.e.: 127.0.0.1:12345. If your instance is running in a Docker/Kubernetes environment you need to setup port forwarding for your application.",
 		Value: "",
 	}
@@ -236,6 +235,16 @@ var (
 		Name:  noDiagNetworkFlagName,
 		Usage: "Network diagnostics won't be performed",
 		Value: false,
+	}
+	maxActiveFlowsFlag = &cli.Uint64Flag{
+		Name:    flags.MaxActiveFlows,
+		Usage:   "Overrides the remote configuration for max active private network flows (TCP/UDP) that this cloudflared instance supports",
+		EnvVars: []string{"TUNNEL_MAX_ACTIVE_FLOWS"},
+	}
+	dnsResolverAddrsFlag = &cli.StringSliceFlag{
+		Name:    flags.VirtualDNSServiceResolverAddresses,
+		Usage:   "Overrides the dynamic DNS resolver resolution to use these address:port's instead.",
+		EnvVars: []string{"TUNNEL_DNS_RESOLVER_ADDRS"},
 	}
 )
 
@@ -339,7 +348,7 @@ func listCommand(c *cli.Context) error {
 	if !c.Bool("show-deleted") {
 		filter.NoDeleted()
 	}
-	if name := c.String("name"); name != "" {
+	if name := c.String(flags.Name); name != "" {
 		filter.ByName(name)
 	}
 	if namePrefix := c.String("name-prefix"); namePrefix != "" {
@@ -449,7 +458,7 @@ func fmtConnections(connections []cfapi.Connection, showRecentlyDisconnected boo
 	sort.Strings(sortedColos)
 
 	// Map each colo to its frequency, combine into output string.
-	var output []string
+	output := make([]string, 0, len(sortedColos))
 	for _, coloName := range sortedColos {
 		output = append(output, fmt.Sprintf("%dx%s", numConnsPerColo[coloName], coloName))
 	}
@@ -469,16 +478,21 @@ func buildReadyCommand() *cli.Command {
 }
 
 func readyCommand(c *cli.Context) error {
-	metricsOpts := c.String("metrics")
-	if !c.IsSet("metrics") {
-		return fmt.Errorf("--metrics has to be provided")
+	metricsOpts := c.String(flags.Metrics)
+	if !c.IsSet(flags.Metrics) {
+		return errors.New("--metrics has to be provided")
 	}
 
 	requestURL := fmt.Sprintf("http://%s/ready", metricsOpts)
-	res, err := http.Get(requestURL)
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
 		return err
 	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
 	if res.StatusCode != 200 {
 		body, err := io.ReadAll(res.Body)
 		if err != nil {
@@ -705,9 +719,11 @@ func buildRunCommand() *cli.Command {
 		selectProtocolFlag,
 		featuresFlag,
 		tunnelTokenFlag,
-		tunnelProxyFlag,
+		tunnelTokenFileFlag,
 		icmpv4SrcFlag,
 		icmpv6SrcFlag,
+		maxActiveFlowsFlag,
+		dnsResolverAddrsFlag,
 	}
 	flags = append(flags, configureProxyFlags(false)...)
 	return &cli.Command{
@@ -734,7 +750,7 @@ func runCommand(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-    edgeTunnel := c.String(EdgeTunnelFlag)
+
 	if c.NArg() > 1 {
 		return cliutil.UsageError(`"cloudflared tunnel run" accepts only one argument, the ID or name of the tunnel to run.`)
 	}
@@ -745,12 +761,22 @@ func runCommand(c *cli.Context) error {
 			"your origin will not be reachable. You should remove the `hostname` property to avoid this warning.")
 	}
 
-	// Check if token is provided and if not use default tunnelID flag method
-	if tokenStr := c.String(TunnelTokenFlag); tokenStr != "" {
-		if token, err := ParseToken(tokenStr); err == nil {
-			return sc.runWithCredentials(token.Credentials(), edgeTunnel)
+	tokenStr := c.String(TunnelTokenFlag)
+	// Check if tokenStr is blank before checking for tokenFile
+	if tokenStr == "" {
+		if tokenFile := c.String(TunnelTokenFileFlag); tokenFile != "" {
+			data, err := os.ReadFile(tokenFile)
+			if err != nil {
+				return cliutil.UsageError("Failed to read token file: %s", err.Error())
+			}
+			tokenStr = strings.TrimSpace(string(data))
 		}
-
+	}
+	// Check if token is provided and if not use default tunnelID flag method
+	if tokenStr != "" {
+		if token, err := ParseToken(tokenStr); err == nil {
+			return sc.runWithCredentials(token.Credentials())
+		}
 		return cliutil.UsageError("Provided Tunnel token is not valid.")
 	} else {
 		tunnelRef := c.Args().First()
@@ -762,7 +788,7 @@ func runCommand(c *cli.Context) error {
 			}
 		}
 
-		return runNamedTunnel(sc, tunnelRef, edgeTunnel)
+		return runNamedTunnel(sc, tunnelRef)
 	}
 }
 
@@ -779,24 +805,12 @@ func ParseToken(tokenStr string) (*connection.TunnelToken, error) {
 	return &token, nil
 }
 
-func ParseEdgeTunnel(edgeTunnel string) error {
-    ipPort := strings.Split(edgeTunnel, ":")
-    if len(ipPort) != 2 {
-        return fmt.Errorf("edgeTunnel value should be in the format <ip>:<port>")
-    }
-    _, err := strconv.Atoi(ipPort[1])
-    if err != nil {
-        return err
-    }
-	return nil
-}
-
-func runNamedTunnel(sc *subcommandContext, tunnelRef string, edgeTunnel string) error {
+func runNamedTunnel(sc *subcommandContext, tunnelRef string) error {
 	tunnelID, err := sc.findID(tunnelRef)
 	if err != nil {
 		return errors.Wrap(err, "error parsing tunnel ID")
 	}
-	return sc.run(tunnelID, edgeTunnel)
+	return sc.run(tunnelID)
 }
 
 func buildCleanupCommand() *cli.Command {
@@ -1088,7 +1102,7 @@ func diagCommand(ctx *cli.Context) error {
 	log := sctx.log
 	options := diagnostic.Options{
 		KnownAddresses: metrics.GetMetricsKnownAddresses(metrics.Runtime),
-		Address:        sctx.c.String(metricsFlagName),
+		Address:        sctx.c.String(flags.Metrics),
 		ContainerID:    sctx.c.String(diagContainerIDFlagName),
 		PodID:          sctx.c.String(diagPodFlagName),
 		Toggles: diagnostic.Toggles{

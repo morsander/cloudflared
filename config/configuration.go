@@ -155,7 +155,7 @@ func FindOrCreateConfigPath() string {
 // i.e. it fails if a user specifies both --url and --unix-socket
 func ValidateUnixSocket(c *cli.Context) (string, error) {
 	if c.IsSet("unix-socket") && (c.IsSet("url") || c.NArg() > 0) {
-		return "", errors.New("--unix-socket must be used exclusivly.")
+		return "", errors.New("--unix-socket must be used exclusively.")
 	}
 	return c.String("unix-socket"), nil
 }
@@ -242,6 +242,8 @@ type AccessConfig struct {
 
 	// AudTag is the AudTag to verify access JWT against.
 	AudTag []string `yaml:"audTag" json:"audTag"`
+
+	Environment string `yaml:"environment" json:"environment,omitempty"`
 }
 
 type IngressIPRule struct {
@@ -260,6 +262,7 @@ type Configuration struct {
 
 type WarpRoutingConfig struct {
 	ConnectTimeout *CustomDuration `yaml:"connectTimeout" json:"connectTimeout,omitempty"`
+	MaxActiveFlows *uint64         `yaml:"maxActiveFlows" json:"maxActiveFlows,omitempty"`
 	TCPKeepAlive   *CustomDuration `yaml:"tcpKeepAlive" json:"tcpKeepAlive,omitempty"`
 }
 

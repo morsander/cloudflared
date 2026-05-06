@@ -1,3 +1,181 @@
+2026.3.0
+- 2026-03-05 TUN-10292: Add cloudflared management token command
+- 2026-03-03 chore: Addressing small fixes and typos
+- 2026-03-03 fix: Update go-sentry and go-oidc to address CVE's
+- 2026-02-24 TUN-10258: add agents.md
+- 2026-02-23 TUN-10267: Update mods to fix CVE GO-2026-4394
+- 2026-02-20 TUN-10247: Update tail command to use /management/logs endpoint
+- 2026-02-11 TUN-9858: Add more information to proxy-dns removal message
+
+2026.2.0
+- 2026-02-06 TUN-10216: TUN fix cloudflare vulnerabilities GO-2026-4340 and GO-2026-4341
+- 2026-02-02 TUN-9858: Remove proxy-dns feature from cloudflared
+
+2026.1.2
+- 2026-01-23 Revert "TUN-9863: Update pipelines to use cloudflared EV Certificate"
+- 2026-01-21 Revert "TUN-9886 notarize cloudflared"
+- 2025-12-12 TUN-9886 notarize cloudflared
+
+2026.1.1
+- 2026-01-19 fix: Update boto3 to run on trixie
+- 2026-01-19 fix: Fix wixl bundling tool for windows msi packages
+- 2026-01-19 fix: rpm bundling and rpm key import
+
+2026.1.0
+- 2026-01-13 TUN-10162: Update go to 1.24.11 and Debian distroless to debian13
+- 2025-11-21 Replace jira.cfops.it with jira.cfdata.org in connection/http2_test.go
+- 2025-11-19 TUN-9863: Update pipelines to use cloudflared EV Certificate
+- 2025-11-07 TUN-9800: Migrate apt internal builds to Gitlab
+- 2025-11-04 TUN-9998: Don't need to read origin cert to determine if the endpoint is fedramp
+- 2025-10-13 TUN-9910: Make the metadata key to carry HTTP status over QUIC transport a constant
+
+2025.11.1
+- 2025-11-07 TUN-9800: Fix docker hub push step
+
+2025.11.0
+- 2025-11-06 TUN-9863: Introduce Code Signing for Windows Builds
+- 2025-11-06 TUN-9800: Prefix gitlab steps with operating system
+- 2025-11-04 chore: Update cloudflared signing key name in index.html
+- 2025-10-31 chore: add claude review
+- 2025-10-31 Chore: Update documentation links in README
+- 2025-10-31 TUN-9800: Add pipelines for linux packaging
+
+2025.10.1
+- 2025-10-30 chore: Update ci image to use goboring 1.24.9
+- 2025-10-28 TUN-9849: Add cf-proxy-* to control response headers
+- 2025-10-24 TUN-9961: Add pkg.cloudflared.com index.html to git repo
+- 2025-10-23 TUN-9954: Update from go1.24.6 to go1.24.9
+- 2025-10-23 Fix systemd service installation hanging
+- 2025-10-21 TUN-9941: Use new GPG key for RPM builds
+- 2025-10-21 TUN-9941: Fix typo causing r2-release-next deployment to fail
+- 2025-10-21 TUN-9941: Lookup correct key for RPM signature
+- 2025-10-15 TUN-9919: Make RPM postinstall scriplet idempotent
+- 2025-10-14 TUN-9916: Fix the cloudflared binary path used in the component test
+
+2025.10.0
+- 2025-10-14 chore: Fix upload of RPM repo file during double signing
+- 2025-10-13 TUN-9882: Bump datagram v3 write channel capacity
+- 2025-10-10 chore: Fix import of GPG keys when two keys are provided
+- 2025-10-10 chore: Fix parameter order when uploading RPM .repo file to R2
+- 2025-10-10 TUN-9883: Add new datagram v3 feature flag
+- 2025-10-09 chore: Force usage of go-boring 1.24
+- 2025-10-08 TUN-9882: Improve metrics for datagram v3
+- 2025-10-07 GRC-16749: Add fedramp tags to catalog
+- 2025-10-07 TUN-9882: Add buffers for UDP and ICMP datagrams in datagram v3
+- 2025-10-07 TUN-9882: Add write deadline for UDP origin writes
+- 2025-09-29 TUN-9776: Support signing Debian packages with two keys for rollover
+- 2025-09-22 TUN-9800: Add pipeline to sync between gitlab and github repos
+
+2025.9.1
+- 2025-09-22 TUN-9855: Create script to ignore vulnerabilities from govuln check
+- 2025-09-19 TUN-9852: Remove fmt.Println from cloudflared access command
+
+2025.9.0
+- 2025-09-15 TUN-9820: Add support for FedRAMP in originRequest Access config
+- 2025-09-11 TUN-9800: Migrate cloudflared-ci pipelines to Gitlab CI
+- 2025-09-04 TUN-9803: Add windows builds to gitlab-ci
+- 2025-08-27 TUN-9755: Set endpoint in tunnel credentials when generating locally managed tunnel with a Fed token
+
+2025.8.1
+- 2025-08-19 AUTH-7480 update fed callback url for login helper
+- 2025-08-19 CUSTESC-53681: Correct QUIC connection management for datagram handlers
+- 2025-08-12 AUTH-7260: Add support for login interstitial auto closure
+
+2025.8.0
+- 2025-08-07 vuln: Fix GO-2025-3770 vulnerability
+- 2025-07-23 TUN-9583: set proper url and hostname for cloudflared tail command
+- 2025-07-07 TUN-9542: Remove unsupported Debian-based releases
+
+2025.7.0
+- 2025-07-03 TUN-9540: Use numeric user id for Dockerfiles
+- 2025-07-01 TUN-9161: Remove P256Kyber768Draft00PQKex curve from nonFips curve preferences
+- 2025-07-01 TUN-9531: Bump go-boring from 1.24.2 to 1.24.4
+- 2025-07-01 TUN-9511: Add metrics for virtual DNS origin
+- 2025-06-30 TUN-9470: Add OriginDialerService to include TCP
+- 2025-06-30 TUN-9473: Add --dns-resolver-addrs flag
+- 2025-06-27 TUN-9472: Add virtual DNS service
+- 2025-06-23 TUN-9469: Centralize UDP origin proxy dialing as ingress service
+
+2025.6.1
+- 2025-06-16 TUN-9467: add vulncheck to cloudflared
+- 2025-06-16 TUN-9495: Remove references to cloudflare-go
+- 2025-06-16 TUN-9371: Add logging format as JSON
+- 2025-06-12 TUN-9467: bump coredns to solve CVE
+
+2025.6.0
+- 2025-06-06 TUN-9016: update go to 1.24
+- 2025-06-05 TUN-9171: Use `is_default_network` instead of `is_default` to create vnet's
+
+2025.5.0
+- 2025-05-14 TUN-9319: Add dynamic loading of features to connections via ConnectionOptionsSnapshot
+- 2025-05-13 TUN-9322: Add metric for unsupported RPC commands for datagram v3
+- 2025-05-07 TUN-9291: Remove dynamic reloading of features for datagram v3
+
+2025.4.2
+- 2025-04-30 chore: Do not use gitlab merge request pipelines
+- 2025-04-30 DEVTOOLS-16383: Create GitlabCI pipeline to release Mac builds
+- 2025-04-24 TUN-9255: Improve flush on write conditions in http2 tunnel type to match what is done on the edge
+- 2025-04-10 SDLC-3727 - Adding FIPS status to backstage
+
+2025.4.0
+- 2025-04-02 Fix broken links in `cmd/cloudflared/*.go` related to running tunnel as a service
+- 2025-04-02 chore: remove repetitive words
+- 2025-04-01 Fix messages to point to one.dash.cloudflare.com
+- 2025-04-01 feat: emit explicit errors for the `service` command on unsupported OSes
+- 2025-04-01 Use RELEASE_NOTES date instead of build date
+- 2025-04-01 chore: Update tunnel configuration link in the readme
+- 2025-04-01 fix: expand home directory for credentials file
+- 2025-04-01 fix: Use path and filepath operation appropriately
+- 2025-04-01 feat: Adds a new command line for tunnel run for token file
+- 2025-04-01 chore: fix linter rules
+- 2025-03-17 TUN-9101: Don't ignore errors on `cloudflared access ssh`
+- 2025-03-06 TUN-9089: Pin go import to v0.30.0, v0.31.0 requires go 1.23
+
+2025.2.1
+- 2025-02-26 TUN-9016: update base-debian to v12
+- 2025-02-25 TUN-8960: Connect to FED API GW based on the OriginCert's endpoint
+- 2025-02-25 TUN-9007: modify logic to resolve region when the tunnel token has an endpoint field
+- 2025-02-13 SDLC-3762: Remove backstage.io/source-location from catalog-info.yaml
+- 2025-02-06 TUN-8914: Create a flags module to group all cloudflared cli flags
+
+2025.2.0
+- 2025-02-03 TUN-8914: Add a new configuration to locally override the max-active-flows
+- 2025-02-03 Bump x/crypto to 0.31.0
+
+2025.1.1
+- 2025-01-30 TUN-8858: update go to 1.22.10 and include quic-go FIPS changes
+- 2025-01-30 TUN-8855: fix lint issues
+- 2025-01-30 TUN-8855: Update PQ curve preferences
+- 2025-01-30 TUN-8857: remove restriction for using FIPS and PQ
+- 2025-01-30 TUN-8894: report FIPS+PQ error to Sentry when dialling to the edge
+- 2025-01-22 TUN-8904: Rename Connect Response Flow Rate Limited metadata
+- 2025-01-21 AUTH-6633 Fix cloudflared access login + warp as auth
+- 2025-01-20 TUN-8861: Add session limiter to UDP session manager
+- 2025-01-20 TUN-8861: Rename Session Limiter to Flow Limiter
+- 2025-01-17 TUN-8900: Add import of Apple Developer Certificate Authority to macOS Pipeline
+- 2025-01-17 TUN-8871: Accept login flag to authenticate with Fedramp environment
+- 2025-01-16 TUN-8866: Add linter to cloudflared repository
+- 2025-01-14 TUN-8861: Add session limiter to TCP session manager
+- 2025-01-13 TUN-8861: Add configuration for active sessions limiter
+- 2025-01-09 TUN-8848: Don't treat connection shutdown as an error condition when RPC server is done
+
+2025.1.0
+- 2025-01-06 TUN-8842: Add Ubuntu Noble and 'any' debian distributions to release script
+- 2025-01-06 TUN-8807: Add support_datagram_v3 to remote feature rollout
+- 2024-12-20 TUN-8829: add CONTAINER_BUILD to dockerfiles
+
+2024.12.2
+- 2024-12-19 TUN-8822: Prevent concurrent usage of ICMPDecoder
+- 2024-12-18 TUN-8818: update changes document to reflect newly added diag subcommand
+- 2024-12-17 TUN-8817: Increase close session channel by one since there are two writers
+- 2024-12-13 TUN-8797: update CHANGES.md with note about semi-deterministic approach used to bind metrics server
+- 2024-12-13 TUN-8724: Add CLI command for diagnostic procedure
+- 2024-12-11 TUN-8786: calculate cli flags once for the diagnostic procedure
+- 2024-12-11 TUN-8792: Make diag/system endpoint always return a JSON
+- 2024-12-10 TUN-8783: fix log collectors for the diagnostic procedure
+- 2024-12-10 TUN-8785: include the icmp sources in the diag's tunnel state
+- 2024-12-10 TUN-8784: Set JSON encoder options to print formatted JSON when writing diag files
+
 2024.12.1
 - 2024-12-10 TUN-8795: update createrepo to createrepo_c to fix the release_pkgs.py script
 

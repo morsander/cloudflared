@@ -3,20 +3,21 @@ package v3_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 	"slices"
-	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fortytw2/leaktest"
 	"github.com/rs/zerolog"
 
 	v3 "github.com/cloudflare/cloudflared/quic/v3"
 )
 
 var (
-	expectedContextCanceled = errors.New("expected context canceled")
+	errExpectedContextCanceled = errors.New("expected context canceled")
 
 	testOriginAddr = net.UDPAddrFromAddrPort(netip.MustParseAddrPort("127.0.0.1:0"))
 	testLocalAddr  = net.UDPAddrFromAddrPort(netip.MustParseAddrPort("127.0.0.1:0"))
@@ -30,92 +31,132 @@ func TestSessionNew(t *testing.T) {
 	}
 }
 
-func testSessionWrite(t *testing.T, payload []byte) {
+func testSessionWrite(t *testing.T, payloads [][]byte) {
 	log := zerolog.Nop()
-	origin := newTestOrigin(makePayload(1280))
-	session := v3.NewSession(testRequestID, 5*time.Second, &origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
-	n, err := session.Write(payload)
-	if err != nil {
-		t.Fatal(err)
+	origin, server := net.Pipe()
+	defer origin.Close()
+	defer server.Close()
+	// Start origin server reads
+	serverRead := make(chan []byte, len(payloads))
+	go func() {
+		for range len(payloads) {
+			buf := make([]byte, 1500)
+			_, _ = server.Read(buf[:])
+			serverRead <- buf
+		}
+		close(serverRead)
+	}()
+
+	// Create a session
+	session := v3.NewSession(testRequestID, 5*time.Second, origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
+	defer session.Close()
+	// Start the Serve to begin the writeLoop
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(context.Canceled)
+	done := make(chan error)
+	go func() {
+		done <- session.Serve(ctx)
+	}()
+	// Write the payloads to the session
+	for _, payload := range payloads {
+		session.Write(payload)
 	}
-	if n != len(payload) {
-		t.Fatal("unable to write the whole payload")
+
+	// Read from the origin to ensure the payloads were received (in-order)
+	for i, payload := range payloads {
+		read := <-serverRead
+		if !slices.Equal(payload, read[:len(payload)]) {
+			t.Fatalf("payload[%d] provided from origin and read value are not the same (%x) and (%x)", i, payload[:16], read[:16])
+		}
 	}
-	if !slices.Equal(payload, origin.write[:len(payload)]) {
-		t.Fatal("payload provided from origin and read value are not the same")
+	_, more := <-serverRead
+	if more {
+		t.Fatalf("expected the session to have all of the origin payloads received: %d", len(serverRead))
+	}
+
+	assertContextClosed(t, ctx, done, cancel)
+}
+
+func TestSessionWrite(t *testing.T) {
+	defer leaktest.Check(t)()
+	for i := range 1280 {
+		payloads := makePayloads(i, 16)
+		testSessionWrite(t, payloads)
 	}
 }
 
-func TestSessionWrite_Max(t *testing.T) {
-	payload := makePayload(1280)
-	testSessionWrite(t, payload)
-}
-
-func TestSessionWrite_Min(t *testing.T) {
-	payload := makePayload(0)
-	testSessionWrite(t, payload)
-}
-
-func TestSessionServe_OriginMax(t *testing.T) {
-	payload := makePayload(1280)
-	testSessionServe_Origin(t, payload)
-}
-
-func TestSessionServe_OriginMin(t *testing.T) {
-	payload := makePayload(0)
-	testSessionServe_Origin(t, payload)
-}
-
-func testSessionServe_Origin(t *testing.T, payload []byte) {
+func testSessionRead(t *testing.T, payloads [][]byte) {
 	log := zerolog.Nop()
+	origin, server := net.Pipe()
+	defer origin.Close()
+	defer server.Close()
 	eyeball := newMockEyeball()
-	origin := newTestOrigin(payload)
-	session := v3.NewSession(testRequestID, 3*time.Second, &origin, testOriginAddr, testLocalAddr, &eyeball, &noopMetrics{}, &log)
+	session := v3.NewSession(testRequestID, 3*time.Second, origin, testOriginAddr, testLocalAddr, &eyeball, &noopMetrics{}, &log)
 	defer session.Close()
 
-	ctx, cancel := context.WithCancelCause(context.Background())
+	ctx, cancel := context.WithCancelCause(t.Context())
 	defer cancel(context.Canceled)
 	done := make(chan error)
 	go func() {
 		done <- session.Serve(ctx)
 	}()
 
-	select {
-	case data := <-eyeball.recvData:
-		// check received data matches provided from origin
-		expectedData := makePayload(1500)
-		v3.MarshalPayloadHeaderTo(testRequestID, expectedData[:])
-		copy(expectedData[17:], payload)
-		if !slices.Equal(expectedData[:17+len(payload)], data) {
-			t.Fatal("expected datagram did not equal expected")
+	// Write from the origin server to the eyeball
+	go func() {
+		for _, payload := range payloads {
+			_, _ = server.Write(payload)
 		}
-		cancel(expectedContextCanceled)
-	case err := <-ctx.Done():
-		// we expect the payload to return before the context to cancel on the session
-		t.Fatal(err)
+	}()
+
+	// Read from the eyeball to ensure the payloads were received (in-order)
+	for i, payload := range payloads {
+		select {
+		case data := <-eyeball.recvData:
+			// check received data matches provided from origin
+			expectedData := makePayload(1500)
+			_ = v3.MarshalPayloadHeaderTo(testRequestID, expectedData[:])
+			copy(expectedData[17:], payload)
+			if !slices.Equal(expectedData[:v3.DatagramPayloadHeaderLen+len(payload)], data) {
+				t.Fatalf("expected datagram[%d] did not equal expected", i)
+			}
+		case err := <-ctx.Done():
+			// we expect the payload to return before the context to cancel on the session
+			t.Fatal(err)
+		}
 	}
 
-	err := <-done
-	if !errors.Is(err, context.Canceled) {
-		t.Fatal(err)
-	}
-	if !errors.Is(context.Cause(ctx), expectedContextCanceled) {
-		t.Fatal(err)
+	assertContextClosed(t, ctx, done, cancel)
+}
+
+func TestSessionRead(t *testing.T) {
+	defer leaktest.Check(t)()
+	for i := range 1280 {
+		payloads := makePayloads(i, 16)
+		testSessionRead(t, payloads)
 	}
 }
 
-func TestSessionServe_OriginTooLarge(t *testing.T) {
+func TestSessionRead_OriginTooLarge(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
 	eyeball := newMockEyeball()
 	payload := makePayload(1281)
-	origin := newTestOrigin(payload)
-	session := v3.NewSession(testRequestID, 2*time.Second, &origin, testOriginAddr, testLocalAddr, &eyeball, &noopMetrics{}, &log)
+	origin, server := net.Pipe()
+	defer origin.Close()
+	defer server.Close()
+	session := v3.NewSession(testRequestID, 2*time.Second, origin, testOriginAddr, testLocalAddr, &eyeball, &noopMetrics{}, &log)
 	defer session.Close()
 
 	done := make(chan error)
 	go func() {
-		done <- session.Serve(context.Background())
+		done <- session.Serve(t.Context())
 	}()
+
+	// Attempt to write a payload too large from the origin
+	_, err := server.Write(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	select {
 	case data := <-eyeball.recvData:
@@ -130,6 +171,7 @@ func TestSessionServe_OriginTooLarge(t *testing.T) {
 }
 
 func TestSessionServe_Migrate(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
 	eyeball := newMockEyeball()
 	pipe1, pipe2 := net.Pipe()
@@ -137,7 +179,7 @@ func TestSessionServe_Migrate(t *testing.T) {
 	defer session.Close()
 
 	done := make(chan error)
-	eyeball1Ctx, cancel := context.WithCancelCause(context.Background())
+	eyeball1Ctx, cancel := context.WithCancelCause(t.Context())
 	go func() {
 		done <- session.Serve(eyeball1Ctx)
 	}()
@@ -145,7 +187,7 @@ func TestSessionServe_Migrate(t *testing.T) {
 	// Migrate the session to a new connection before origin sends data
 	eyeball2 := newMockEyeball()
 	eyeball2.connID = 1
-	eyeball2Ctx := context.Background()
+	eyeball2Ctx := t.Context()
 	session.Migrate(&eyeball2, eyeball2Ctx, &log)
 
 	// Cancel the origin eyeball context; this should not cancel the session
@@ -162,7 +204,7 @@ func TestSessionServe_Migrate(t *testing.T) {
 
 	// Origin sends data
 	payload2 := []byte{0xde}
-	pipe1.Write(payload2)
+	_, _ = pipe1.Write(payload2)
 
 	// Expect write to eyeball2
 	data := <-eyeball2.recvData
@@ -186,6 +228,7 @@ func TestSessionServe_Migrate(t *testing.T) {
 }
 
 func TestSessionServe_Migrate_CloseContext2(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
 	eyeball := newMockEyeball()
 	pipe1, pipe2 := net.Pipe()
@@ -193,7 +236,7 @@ func TestSessionServe_Migrate_CloseContext2(t *testing.T) {
 	defer session.Close()
 
 	done := make(chan error)
-	eyeball1Ctx, cancel := context.WithCancelCause(context.Background())
+	eyeball1Ctx, cancel := context.WithCancelCause(t.Context())
 	go func() {
 		done <- session.Serve(eyeball1Ctx)
 	}()
@@ -201,7 +244,7 @@ func TestSessionServe_Migrate_CloseContext2(t *testing.T) {
 	// Migrate the session to a new connection before origin sends data
 	eyeball2 := newMockEyeball()
 	eyeball2.connID = 1
-	eyeball2Ctx, cancel2 := context.WithCancelCause(context.Background())
+	eyeball2Ctx, cancel2 := context.WithCancelCause(t.Context())
 	session.Migrate(&eyeball2, eyeball2Ctx, &log)
 
 	// Cancel the origin eyeball context; this should not cancel the session
@@ -212,13 +255,13 @@ func TestSessionServe_Migrate_CloseContext2(t *testing.T) {
 		t.Fatalf("expected session to still be running")
 	default:
 	}
-	if context.Cause(eyeball1Ctx) != contextCancelErr {
+	if !errors.Is(context.Cause(eyeball1Ctx), contextCancelErr) {
 		t.Fatalf("first eyeball context should be cancelled manually: %+v", context.Cause(eyeball1Ctx))
 	}
 
 	// Origin sends data
 	payload2 := []byte{0xde}
-	pipe1.Write(payload2)
+	_, _ = pipe1.Write(payload2)
 
 	// Expect write to eyeball2
 	data := <-eyeball2.recvData
@@ -245,39 +288,50 @@ func TestSessionServe_Migrate_CloseContext2(t *testing.T) {
 }
 
 func TestSessionClose_Multiple(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	origin := newTestOrigin(makePayload(128))
-	session := v3.NewSession(testRequestID, 5*time.Second, &origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
+	origin, server := net.Pipe()
+	defer origin.Close()
+	defer server.Close()
+	session := v3.NewSession(testRequestID, 5*time.Second, origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
 	err := session.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !origin.closed.Load() {
-		t.Fatal("origin wasn't closed")
+	b := [1500]byte{}
+	_, err = server.Read(b[:])
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("origin server connection should be closed: %s", err)
 	}
-	// Reset the closed status to make sure it isn't closed again
-	origin.closed.Store(false)
 	// subsequent closes shouldn't call close again or cause any errors
 	err = session.Close()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if origin.closed.Load() {
-		t.Fatal("origin was incorrectly closed twice")
+	_, err = server.Read(b[:])
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("origin server connection should still be closed: %s", err)
 	}
 }
 
 func TestSessionServe_IdleTimeout(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	origin := newTestIdleOrigin(10 * time.Second) // Make idle time longer than closeAfterIdle
+	origin, server := net.Pipe()
+	defer origin.Close()
+	defer server.Close()
 	closeAfterIdle := 2 * time.Second
-	session := v3.NewSession(testRequestID, closeAfterIdle, &origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
-	err := session.Serve(context.Background())
+	session := v3.NewSession(testRequestID, closeAfterIdle, origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
+	err := session.Serve(t.Context())
+
+	// Session should idle timeout if no reads or writes occur
 	if !errors.Is(err, v3.SessionIdleErr{}) {
 		t.Fatal(err)
 	}
 	// session should be closed
-	if !origin.closed {
+	b := [1500]byte{}
+	_, err = server.Read(b[:])
+	if !errors.Is(err, io.EOF) {
 		t.Fatalf("session should be closed after Serve returns")
 	}
 	// closing a session again should not return an error
@@ -288,20 +342,24 @@ func TestSessionServe_IdleTimeout(t *testing.T) {
 }
 
 func TestSessionServe_ParentContextCanceled(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
-	// Make idle time and idle timeout longer than closeAfterIdle
-	origin := newTestIdleOrigin(10 * time.Second)
+	origin, server := net.Pipe()
+	defer origin.Close()
+	defer server.Close()
 	closeAfterIdle := 10 * time.Second
 
-	session := v3.NewSession(testRequestID, closeAfterIdle, &origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	session := v3.NewSession(testRequestID, closeAfterIdle, origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	defer cancel()
 	err := session.Serve(ctx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
 	// session should be closed
-	if !origin.closed {
+	b := [1500]byte{}
+	_, err = server.Read(b[:])
+	if !errors.Is(err, io.EOF) {
 		t.Fatalf("session should be closed after Serve returns")
 	}
 	// closing a session again should not return an error
@@ -312,79 +370,14 @@ func TestSessionServe_ParentContextCanceled(t *testing.T) {
 }
 
 func TestSessionServe_ReadErrors(t *testing.T) {
+	defer leaktest.Check(t)()
 	log := zerolog.Nop()
 	origin := newTestErrOrigin(net.ErrClosed, nil)
 	session := v3.NewSession(testRequestID, 30*time.Second, &origin, testOriginAddr, testLocalAddr, &noopEyeball{}, &noopMetrics{}, &log)
-	err := session.Serve(context.Background())
+	err := session.Serve(t.Context())
 	if !errors.Is(err, net.ErrClosed) {
 		t.Fatal(err)
 	}
-}
-
-type testOrigin struct {
-	// bytes from Write
-	write []byte
-	// bytes provided to Read
-	read     []byte
-	readOnce atomic.Bool
-	closed   atomic.Bool
-}
-
-func newTestOrigin(payload []byte) testOrigin {
-	return testOrigin{
-		read: payload,
-	}
-}
-
-func (o *testOrigin) Read(p []byte) (n int, err error) {
-	if o.closed.Load() {
-		return -1, net.ErrClosed
-	}
-	if o.readOnce.Load() {
-		// We only want to provide one read so all other reads will be blocked
-		time.Sleep(10 * time.Second)
-	}
-	o.readOnce.Store(true)
-	return copy(p, o.read), nil
-}
-
-func (o *testOrigin) Write(p []byte) (n int, err error) {
-	if o.closed.Load() {
-		return -1, net.ErrClosed
-	}
-	o.write = make([]byte, len(p))
-	copy(o.write, p)
-	return len(p), nil
-}
-
-func (o *testOrigin) Close() error {
-	o.closed.Store(true)
-	return nil
-}
-
-type testIdleOrigin struct {
-	duration time.Duration
-	closed   bool
-}
-
-func newTestIdleOrigin(d time.Duration) testIdleOrigin {
-	return testIdleOrigin{
-		duration: d,
-	}
-}
-
-func (o *testIdleOrigin) Read(p []byte) (n int, err error) {
-	time.Sleep(o.duration)
-	return -1, nil
-}
-
-func (o *testIdleOrigin) Write(p []byte) (n int, err error) {
-	return 0, nil
-}
-
-func (o *testIdleOrigin) Close() error {
-	o.closed = true
-	return nil
 }
 
 type testErrOrigin struct {
